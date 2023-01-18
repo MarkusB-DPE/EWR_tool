@@ -619,7 +619,7 @@ def get_rolling_max_interEvents(df:pd.DataFrame, start_date: date, end_date: dat
         # Iterate over the interevent periods for this EWR
         for i, row in df_subset.iterrows():
             # Get the date range:
-            period = pd.date_range(df_subset.loc[i, 'startDate'],df_subset.loc[i, 'endDate'])
+            period = pd.period_range(df_subset.loc[i, 'startDate'],df_subset.loc[i, 'endDate'])
             # Save to pd.df for function compatibility
             dates_df = pd.DataFrame(index = period)
             # Convert year to water year using the existing function            

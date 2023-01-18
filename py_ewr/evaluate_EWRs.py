@@ -382,7 +382,11 @@ def get_index_date(date_index:Any)-> datetime.date:
     if type(date_index) == pd._libs.tslibs.timestamps.Timestamp:
         return date_index.date()
     if type(date_index) == pd._libs.tslibs.period.Period:
-        return date_index.to_timestamp().date()
+        try:
+            return date_index.to_timestamp().date()
+        # Handle model data that has dates outside pandas timestamp upper or lower limit
+        except pd.errors.OutOfBoundsDatetime:
+            return datetime.datetime.strptime(date_index.strftime('%d/%m/%Y'), '%d/%m/%Y').date()
     else:
         return date_index
 
