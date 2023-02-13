@@ -503,7 +503,10 @@ def events_to_interevents(start_date: date, end_date: date, df_events: pd.DataFr
             df_subset = pd.DataFrame(data=data)
 
             # Calculate the interevent length
-            df_subset['interEventLength'] = (df_subset['endDate'] - df_subset['startDate']).dt.days + 1
+            try:
+                df_subset['interEventLength'] = (df_subset['endDate'] - df_subset['startDate']).dt.days + 1
+            except:
+                df_subset['interEventLength'] = (df_subset['endDate'] - df_subset['startDate']) + timedelta(days=1)
             # Remove 0 length entries (these can happen if there was an event on the first or last day of timeseries)
             df_subset = df_subset.drop(df_subset[df_subset.interEventLength == 0].index)
             
