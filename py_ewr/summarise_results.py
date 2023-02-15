@@ -455,7 +455,7 @@ def filter_duplicate_start_dates(df: pd.DataFrame) -> pd.DataFrame:
 
     return df
 
-def events_to_interevents(start_date: date, end_date: date, df_events: pd.DataFrame) -> pd.DataFrame:
+def events_to_interevents(start_date: date, end_date: date, df_events: pd.DataFrame, scenarios={}) -> pd.DataFrame:
     '''
     Taking a dataframe of events, returning a dataframe of interevents.
     For each interevent period: start date, end date and length (days).
@@ -477,6 +477,17 @@ def events_to_interevents(start_date: date, end_date: date, df_events: pd.DataFr
                                                 'startDate', 'endDate', 'interEventLength'])
 
     for i in unique_ID:
+        # only run if scenario data
+        if len(scenarios) != 0:
+            y = df_events[df_events['ID'] == i]['scenario'].values[0]
+            # Get start and end date form scenario df
+            flow_data = scenarios[y]
+            date0 = flow_data.index[0]
+            date1 = flow_data.index[-1]
+
+            start_date = date(date0.year, date0.month, date0.day)
+            end_date = date(date1.year, date1.month, date1.day)
+
         contain_values = df_events[df_events['ID'].str.fullmatch(i)]
         # Get the new start and end dates as lists:
         new_ends = list(contain_values['startDate'])
@@ -485,6 +496,7 @@ def events_to_interevents(start_date: date, end_date: date, df_events: pd.DataFr
         new_ends = [d-timedelta(days=1) for d in new_ends]
         new_starts = [d+timedelta(days=1) for d in new_starts]
         # Insert the start date of the timeseries at the start, end date at the end
+        # TODO: Needs to take starts and ends from individual scenario, not from global time series
         new_ends = new_ends + [end_date]
         new_starts = [start_date] + new_starts
         

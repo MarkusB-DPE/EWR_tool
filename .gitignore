@@ -151,6 +151,7 @@ share/python-wheels/
 .installed.cfg
 *.egg
 MANIFEST
+.idea/
 
 # Other
 sandbox.py
