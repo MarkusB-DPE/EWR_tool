@@ -475,6 +475,8 @@ def events_to_interevents(start_date: date, end_date: date, df_events: pd.DataFr
     unique_ID = list(OrderedDict.fromkeys(df_events['ID']))
     all_interEvents = pd.DataFrame(columns = ['scenario', 'gauge', 'pu', 'ewr', 'ID', 
                                                 'startDate', 'endDate', 'interEventLength'])
+    events_list=[]
+    events_list.append(all_interEvents)
 
     for i in unique_ID:
         # only run if scenario data
@@ -521,9 +523,11 @@ def events_to_interevents(start_date: date, end_date: date, df_events: pd.DataFr
                 df_subset['interEventLength'] = (df_subset['endDate'] - df_subset['startDate']) + timedelta(days=1)
             # Remove 0 length entries (these can happen if there was an event on the first or last day of timeseries)
             df_subset = df_subset.drop(df_subset[df_subset.interEventLength == 0].index)
+
+            events_list.append(df_subset)
             
-            # Add the EWR interevents onto the main dataframe:
-            all_interEvents = pd.concat([all_interEvents, df_subset], ignore_index=True)
+    # Add the EWR interevents onto the main dataframe:
+    all_interEvents = pd.concat(events_list, ignore_index=True)
 
     # Remove the ID column before returning
     all_interEvents.drop(['ID'], axis=1, inplace=True)       
@@ -549,6 +553,9 @@ def filter_successful_events(all_events: pd.DataFrame) -> pd.DataFrame:
     unique_ID = list(OrderedDict.fromkeys(all_events['ID']))
     EWR_table, bad_EWRs = data_inputs.get_EWR_table()
     all_successfulEvents = pd.DataFrame(columns = ['scenario', 'gauge', 'pu', 'ewr', 'waterYear', 'startDate', 'endDate', 'eventDuration', 'eventLength', 'multigauge' 'ID'])
+    events_list =[]
+
+    events_list.append(all_successfulEvents)
     
     # Filter out unsuccesful events
     # Iterate over the all_events dataframe
@@ -564,8 +571,10 @@ def filter_successful_events(all_events: pd.DataFrame) -> pd.DataFrame:
         # Filter out the events that fall under the minimum spell length
         df_subset = df_subset.drop(df_subset[df_subset.eventDuration <= minSpell].index)
 
-        # Append to master dataframe
-        all_successfulEvents = pd.concat([all_successfulEvents, df_subset], ignore_index=True)
+        # Add subset dataframe to list
+        events_list.append(df_subset)
+    # Append to master dataframe
+    all_successfulEvents = pd.concat(events_list, ignore_index=True)
     all_successfulEvents.drop(['ID', 'multigaugeID'], axis=1, inplace=True)
 
     return all_successfulEvents
