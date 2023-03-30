@@ -3,7 +3,8 @@ from itertools import chain
 from collections import defaultdict, OrderedDict
 import numpy as np
 import pandas as pd
-from datetime import date, timedelta
+from datetime import datetime, date, timedelta
+import dask.dataframe as dd
 
 from . import data_inputs, evaluate_EWRs
 #--------------------------------------------------------------------------------------------------
@@ -126,7 +127,8 @@ def process_df(scenario:str, gauge:str, pu:str, pu_df: pd.DataFrame)-> pd.DataFr
         ewr_df["pu"] = pu
         ewr_df = ewr_df.loc[:,~ewr_df.columns.duplicated()]
         returned_dfs.append(ewr_df)
-    return pd.concat(returned_dfs, ignore_index=True)
+    #return pd.concat(returned_dfs, ignore_index=True)
+    return dd.concat(returned_dfs)
 
 
 def process_df_results(results_to_process: List[Dict])-> pd.DataFrame:
@@ -146,7 +148,7 @@ def process_df_results(results_to_process: List[Dict])-> pd.DataFrame:
             returned_dfs.append(transformed_df)
         except Exception as e:
             print(f"Could not process due to {e}")
-    return pd.concat(returned_dfs, ignore_index=True)
+    return dd.concat(returned_dfs)
 
 def get_events_to_process(gauge_events: dict)-> List:
     """Take the detailed gauge events results dictionary of the ewr calculation run,
@@ -261,7 +263,7 @@ def process_ewr_events_stats(events_to_process: List[Dict])-> pd.DataFrame:
     for item in events_to_process:
         row_data = process_yearly_events(**item)
         returned_dfs.append(row_data)
-    return pd.concat(returned_dfs, ignore_index=True)
+    return dd.concat(returned_dfs)
 
 def process_all_yearly_events(scenario:str, gauge:str, pu:str, ewr:str, ewr_events: Dict)-> pd.DataFrame():
     """process each item for the gauge and return all events. Each event is a row with a start and end date
@@ -313,7 +315,7 @@ def process_all_events_results(results_to_process: List[Dict])-> pd.DataFrame:
         except Exception as e:
             print(f"could not process due to {e}")
             continue
-    return pd.concat(returned_dfs, ignore_index=True)
+    return dd.concat(returned_dfs).compute()
 
 def fill_empty(df, columns):
     for col in columns:
@@ -373,8 +375,11 @@ def summarise(input_dict:Dict , events:Dict, parameter_sheet_path:str = None)-> 
     Returns:
         pd.DataFrame: Summary statistics for all ewr calculation for the whole period of the run
     """
+    print(str(datetime.now()) + " starting ewr results summarise")
     to_process = pu_dfs_to_process(input_dict)
     yearly_ewr_results = process_df_results(to_process)
+    yearly_ewr_results = yearly_ewr_results.compute()
+    print(str(datetime.now()) + " dfs concatenated")
     
     # aggregate by "gauge","pu","ewrCode"
     final_summary_output = (yearly_ewr_results
@@ -393,10 +398,13 @@ def summarise(input_dict:Dict , events:Dict, parameter_sheet_path:str = None)-> 
           TotalDays = ("totalPossibleDays" , sum),
           )
     )
+    print(str(datetime.now()) + " groupby done")
     # summarize gauge events
     
     events_to_process = get_events_to_process(events)
     ewr_event_stats = process_ewr_events_stats(events_to_process)
+    ewr_event_stats = ewr_event_stats.compute()
+    print(str(datetime.now()) + " event dfs concatenated")
     
     # join summary with gauge events
     
@@ -404,6 +412,7 @@ def summarise(input_dict:Dict , events:Dict, parameter_sheet_path:str = None)-> 
                                                       'left',
                                                       left_on=['scenario', 'gauge','pu','ewrCode'], 
                                                       right_on=['scenario', 'gauge','pu',"ewrCode"])
+    print(str(datetime.now()) + " summary/gauge merge done")
     # Join Ewr parameter to summary
 
     final_merged = join_ewr_parameters(cols_to_add=['TargetFrequency','MaxInter-event','Multigauge'],
@@ -433,6 +442,8 @@ def summarise(input_dict:Dict , events:Dict, parameter_sheet_path:str = None)-> 
                                     'AverageEventLength', 'ThresholdDays', #'InterEventExceedingCount',
                                     'MaxInterEventYears', 'NoDataDays', 'TotalDays'],
                                     parameter_sheet_path=parameter_sheet_path)
+
+    print(str(datetime.now()) + " final merge done")
     
     return final_merged
 
@@ -476,7 +487,7 @@ def events_to_interevents(start_date: date, end_date: date, df_events: pd.DataFr
     all_interEvents = pd.DataFrame(columns = ['scenario', 'gauge', 'pu', 'ewr', 'ID', 
                                                 'startDate', 'endDate', 'interEventLength'])
     events_list=[]
-    events_list.append(all_interEvents)
+    #events_list.append(all_interEvents)
 
     for i in unique_ID:
         # only run if scenario data
@@ -527,10 +538,11 @@ def events_to_interevents(start_date: date, end_date: date, df_events: pd.DataFr
             events_list.append(df_subset)
             
     # Add the EWR interevents onto the main dataframe:
-    all_interEvents = pd.concat(events_list, ignore_index=True)
+    all_interEvents = dd.concat(events_list)
 
     # Remove the ID column before returning
-    all_interEvents.drop(['ID'], axis=1, inplace=True)       
+    all_interEvents = all_interEvents.drop(['ID'], axis=1)
+    all_interEvents = all_interEvents.compute()
 
     return all_interEvents 
 
@@ -555,7 +567,7 @@ def filter_successful_events(all_events: pd.DataFrame) -> pd.DataFrame:
     all_successfulEvents = pd.DataFrame(columns = ['scenario', 'gauge', 'pu', 'ewr', 'waterYear', 'startDate', 'endDate', 'eventDuration', 'eventLength', 'multigauge' 'ID'])
     events_list =[]
 
-    events_list.append(all_successfulEvents)
+    #events_list.append(all_successfulEvents)
     
     # Filter out unsuccesful events
     # Iterate over the all_events dataframe
@@ -574,8 +586,13 @@ def filter_successful_events(all_events: pd.DataFrame) -> pd.DataFrame:
         # Add subset dataframe to list
         events_list.append(df_subset)
     # Append to master dataframe
-    all_successfulEvents = pd.concat(events_list, ignore_index=True)
-    all_successfulEvents.drop(['ID', 'multigaugeID'], axis=1, inplace=True)
+    all_successfulEvents = dd.concat(events_list)
+
+    all_successfulEvents = all_successfulEvents.drop(['ID'], axis=1)
+
+    all_successfulEvents = all_successfulEvents.compute()
+    print(list(all_successfulEvents.columns.values))
+
 
     return all_successfulEvents
 
