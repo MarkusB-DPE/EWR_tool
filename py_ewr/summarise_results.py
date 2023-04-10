@@ -5,10 +5,11 @@ import numpy as np
 import pandas as pd
 from datetime import datetime, date, timedelta
 import dask.dataframe as dd
+import dask.array as da
 
 from . import data_inputs, evaluate_EWRs
 #--------------------------------------------------------------------------------------------------
-
+nproc = 14
 
 def get_frequency(events: list) -> int:
     '''Returns the frequency of years they occur in.
@@ -466,85 +467,122 @@ def filter_duplicate_start_dates(df: pd.DataFrame) -> pd.DataFrame:
 
     return df
 
-def events_to_interevents(start_date: date, end_date: date, df_events: pd.DataFrame, scenarios={}) -> pd.DataFrame:
-    '''
-    Taking a dataframe of events, returning a dataframe of interevents.
-    For each interevent period: start date, end date and length (days).
 
-    Args:
-        data_start (date): start date of the timeseries
-        data_end (date): end date of the timeseries
+def events_to_interevents(df_events: pd.DataFrame, client, scenarios={}) -> pd.DataFrame:
 
-    Results:
-        pd.DataFrame: Dataframe with the interevent periods
-    
-    '''
+    df_events = df_events.drop(['eventDuration', 'eventLength', 'Multigauge'], axis=1)
 
-    # Create the unique ID field
+    def get_start_date(row):
+        y = row['scenario'].values[0]
+        # Get start and end date form scenario df
+        flow_data = scenarios[y]
+        date0 = flow_data.index[0]
 
-    df_events['ID'] = df_events['scenario']+df_events['gauge']+df_events['pu']+df_events['ewr']
-    unique_ID = list(OrderedDict.fromkeys(df_events['ID']))
-    all_interEvents = pd.DataFrame(columns = ['scenario', 'gauge', 'pu', 'ewr', 'ID', 
-                                                'startDate', 'endDate', 'interEventLength'])
-    events_list=[]
-    #events_list.append(all_interEvents)
+        start_date = date(date0.year, date0.month, date0.day)
 
-    for i in unique_ID:
-        # only run if scenario data
-        if len(scenarios) != 0:
-            y = df_events[df_events['ID'] == i]['scenario'].values[0]
-            # Get start and end date form scenario df
-            flow_data = scenarios[y]
-            date0 = flow_data.index[0]
-            date1 = flow_data.index[-1]
+        return start_date
 
-            start_date = date(date0.year, date0.month, date0.day)
-            end_date = date(date1.year, date1.month, date1.day)
+    def get_end_date(row):
+        y = row['scenario'].values[0]
+        # Get start and end date form scenario df
+        flow_data = scenarios[y]
+        date1 = flow_data.index[-1]
 
-        contain_values = df_events[df_events['ID'].str.fullmatch(i)]
-        # Get the new start and end dates as lists:
-        new_ends = list(contain_values['startDate'])
-        new_starts = list(contain_values['endDate'])
-        # Make the start date a day later and end date day earlier (interevents inclusive)
-        new_ends = [d-timedelta(days=1) for d in new_ends]
-        new_starts = [d+timedelta(days=1) for d in new_starts]
-        # Insert the start date of the timeseries at the start, end date at the end
-        # TODO: Needs to take starts and ends from individual scenario, not from global time series
-        new_ends = new_ends + [end_date]
-        new_starts = [start_date] + new_starts
-        
-        length = len(new_starts)
+        end_date = date(date1.year, date1.month, date1.day)
 
-        if length > 0:
-            # Create the new dataframe:
-            new_scenario = [contain_values['scenario'].iloc[0]]*length
-            new_gauge = [contain_values['gauge'].iloc[0]]*length
-            new_pu = [contain_values['pu'].iloc[0]]*length
-            new_ewr = [contain_values['ewr'].iloc[0]]*length
-            new_ID = [contain_values['ID'].iloc[0]]*length
+        return end_date
 
-            data = {'scenario': new_scenario, 'gauge': new_gauge, 'pu': new_pu, 'ewr': new_ewr, 'ID': new_ID, 'startDate': new_starts, 'endDate': new_ends}
+        # get the scenario start and end dates
 
-            df_subset = pd.DataFrame(data=data)
+    df_starts = df_events.groupby(['scenario', 'gauge', 'pu', 'ewr']).apply(lambda row: get_start_date(row))
+    df_ends = df_events.groupby(['scenario', 'gauge', 'pu', 'ewr']).apply(lambda row: get_end_date(row))
 
-            # Calculate the interevent length
-            try:
-                df_subset['interEventLength'] = (df_subset['endDate'] - df_subset['startDate']).dt.days + 1
-            except:
-                df_subset['interEventLength'] = (df_subset['endDate'] - df_subset['startDate']) + timedelta(days=1)
-            # Remove 0 length entries (these can happen if there was an event on the first or last day of timeseries)
-            df_subset = df_subset.drop(df_subset[df_subset.interEventLength == 0].index)
+    df_ends.name = "endDate"
+    df_starts.name = "startDate"
 
-            events_list.append(df_subset)
-            
-    # Add the EWR interevents onto the main dataframe:
-    all_interEvents = dd.concat(events_list)
+    df_ends = df_ends.to_frame().reset_index()
+    df_starts = df_starts.to_frame().reset_index()
 
-    # Remove the ID column before returning
-    all_interEvents = all_interEvents.drop(['ID'], axis=1)
+    scenario_start_end = df_starts.merge(df_ends, on=['scenario', 'gauge', 'pu', 'ewr'])
+
+    ewr_list = []
+
+    def flip_to_inter(row):
+        # select data, convert to dask array
+        data = df_events[((df_events['scenario'] == row['scenario'])
+                          & (df_events['gauge'] == row['gauge'])
+                          & (df_events['pu'] == row['pu'])
+                          & (df_events['ewr'] == row['ewr']))].to_numpy()
+
+        # get scenario start and end date
+        scenario_start = scenario_start_end[((scenario_start_end['scenario'] == data[0, [0]][0])
+                                             & (scenario_start_end['gauge'] == data[0, [1]][0])
+                                             & (scenario_start_end['pu'] == data[0, [2]][0])
+                                             & (scenario_start_end['ewr'] == data[0, [3]][0]))]['startDate'].values[0]
+
+        scenario_end = scenario_start_end[((scenario_start_end['scenario'] == data[0, [0]][0])
+                                           & (scenario_start_end['gauge'] == data[0, [1]][0])
+                                           & (scenario_start_end['pu'] == data[0, [2]][0])
+                                           & (scenario_start_end['ewr'] == data[0, [3]][0]))]['endDate'].values[0]
+
+        start_list = [data[0, [0]][0], data[0, [1]][0], data[0, [2]][0], data[0, [3]][0], data[0, [4]][0], np.NaN,
+                      scenario_start]
+        end_list = [data[0, [0]][0], data[0, [1]][0], data[0, [2]][0], data[0, [3]][0], data[0, [4]][0], scenario_end,
+                    np.NaN]
+
+        # offset dates + 1 day for start dates, -1 day for end dates
+        # new end dates
+        data[:, [5]] = np.subtract(data[:, [5]], timedelta(days=1))
+        # new start dates
+        data[:, [6]] = np.add(data[:, [6]], timedelta(days=1))
+
+        # insert new end at top, new starts at bottom
+        data = np.vstack(([start_list], data, [end_list]))
+
+        # shift new end date down 1
+        data[:, [6]] = np.roll(data[:, [6]], 1)
+
+        # drop row with NaN
+        data = np.delete(data, 0, 0)
+
+        # calculate inter event lenght
+        inter_event = np.subtract(data[:, [5]], data[:, [6]])
+
+        # add day to inter event lenght
+        inter_event = np.add(inter_event, timedelta(days=1))
+
+        # merge inter event into rest of data
+        data = np.hstack((data, inter_event))
+
+        return data
+
+    futures = []
+    # split df into groups,
+    for index, row in scenario_start_end.iterrows():
+        # future = client.submit(flip_to_inter, df_events,row,scenario_start_end)
+        future = client.submit(flip_to_inter, row)
+
+        futures.append(future)
+
+        # retrieve result for future
+        for future in futures:
+            data = future.result()
+
+        ewr_list.append(data)
+
+    all_interEvents = da.vstack(tuple(ewr_list))
+
+    all_interEvents = dd.from_dask_array(all_interEvents, columns=['scenario', 'gauge', 'pu', 'ewr', 'wateryear',
+                                                                   'endDate', 'startDate', 'interEventLength'])
+
     all_interEvents = all_interEvents.compute()
+    # after conversion apply conversion for intereventlength to int
+    all_interEvents['interEventLength'] = all_interEvents['interEventLength'].dt.days
 
-    return all_interEvents 
+    # after conversion back to df - drop 0 lenght inter events
+    all_interEvents = all_interEvents[all_interEvents['interEventLength'] != 0]
+
+    return all_interEvents
 
 
 def filter_successful_events(all_events: pd.DataFrame) -> pd.DataFrame:
@@ -559,42 +597,24 @@ def filter_successful_events(all_events: pd.DataFrame) -> pd.DataFrame:
     
     '''
 
-    s = 'TEMPORARY_ID_SPLIT'
-
-    all_events['ID'] = all_events['scenario']+s+all_events['gauge']+s+all_events['pu']+s+all_events['ewr']
-    unique_ID = list(OrderedDict.fromkeys(all_events['ID']))
+    all_events = dd.from_pandas(all_events, npartitions=nproc)
     EWR_table, bad_EWRs = data_inputs.get_EWR_table()
-    all_successfulEvents = pd.DataFrame(columns = ['scenario', 'gauge', 'pu', 'ewr', 'waterYear', 'startDate', 'endDate', 'eventDuration', 'eventLength', 'multigauge' 'ID'])
-    events_list =[]
 
-    #events_list.append(all_successfulEvents)
-    
-    # Filter out unsuccesful events
-    # Iterate over the all_events dataframe
-    for i in unique_ID:
-        # Subset df with only 
-        df_subset = all_events[all_events['ID'].str.fullmatch(i)]
-        gauge = i.split('TEMPORARY_ID_SPLIT')[1]
-        pu = i.split('TEMPORARY_ID_SPLIT')[2]
-        ewr = i.split('TEMPORARY_ID_SPLIT')[3]       
+    def get_min_spell(row):
+        minSpell = int(data_inputs.ewr_parameter_grabber(EWR_table, row['gauge'], row['pu'], row['ewr'], 'MinSpell'))
+        return minSpell
 
-        # Pull EWR minSpell value from EWR dataset
-        minSpell = int(data_inputs.ewr_parameter_grabber(EWR_table, gauge, pu, ewr, 'MinSpell'))
-        # Filter out the events that fall under the minimum spell length
-        df_subset = df_subset.drop(df_subset[df_subset.eventDuration <= minSpell].index)
+    min_spell = all_events.apply(lambda row: get_min_spell(row), axis=1, meta=pd.Series(dtype="int64"))
+    min_spell.name = "MinSpell"
 
-        # Add subset dataframe to list
-        events_list.append(df_subset)
-    # Append to master dataframe
-    all_successfulEvents = dd.concat(events_list)
+    # join min spell data to all_events
+    all_events = all_events.join(min_spell)
 
-    all_successfulEvents = all_successfulEvents.drop(['ID'], axis=1)
+    # Filter out the events that fall under the minimum spell length
+    all_successfulEvents = all_events[all_events['eventDuration'] >= all_events['MinSpell']]
+    all_successfulEvents = all_successfulEvents.drop('MinSpell', axis=1)
 
-    all_successfulEvents = all_successfulEvents.compute()
-    print(list(all_successfulEvents.columns.values))
-
-
-    return all_successfulEvents
+    return all_successfulEvents.compute()
 
 def get_rolling_max_interEvents(df:pd.DataFrame, start_date: date, end_date: date, yearly_df: pd.DataFrame) -> pd.DataFrame:
     '''
