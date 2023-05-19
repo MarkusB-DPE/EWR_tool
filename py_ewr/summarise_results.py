@@ -565,8 +565,8 @@ def events_to_interevents(df_events: pd.DataFrame, client, scenarios={}) -> pd.D
         futures.append(future)
 
         # retrieve result for future
-        for future in futures:
-            data = future.result()
+    for future in futures:
+        data = future.result()
 
         ewr_list.append(data)
 
